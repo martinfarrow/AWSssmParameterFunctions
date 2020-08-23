@@ -1,14 +1,17 @@
 #!/bin/bash
 
+# version 1.0
+
 # a set of hopefully useful wrapper functions for caching and
 # handling ssm parameter values
 
 # you must source this file to be able to use the functions
+# e.g.
 # . path_to_this_file/ssm-functionsh.sh
 
 # note key_id variable must be set to the id of your key
 # something like key_id="d9b8a3f1-f846-3adf-8981-ebbbaaa34562"
-# as this code currently assumes your parameters are encrypted
+# as this code assumes your parameters are encrypted
 
 set -a params
 set -a param_cache
@@ -17,6 +20,20 @@ set -a param_cache_names
 ssm_error_file=/tmp/ssm-functions-error.$$
 declare ssm_error_value
 declare ssm_message_level=1
+
+
+type -t md5sum 2>&1 > /dev/null
+if [[ $? -eq 0 ]];then
+  doMD5=doMD5Linux
+  function doMD5() {
+    md5sum | cut -d' ' -f1
+  }
+else
+  alias doMD5=doMD5Mac
+  function doMD5() {
+    md5
+  }
+fi
 
 #
 # _invalid_call()
@@ -60,7 +77,7 @@ function _check_errors() {
 # _getMD5 get the md5sum of the passed parameters
 #
 function _getMD5() {
-  res=$(echo "$1" | md5)
+  res=$(echo "$1" | doMD5)
   echo "var$res"
 }
 
@@ -153,14 +170,16 @@ function _do_message() {
 # or get it from the local cache
 #
 function get_parameter() {
-  local OPTIND o cachemode savemode
+  local OPTIND o cachemode savemode name nflag
   cachemode=0
   savemode=0
-  while getopts ":cC" o $@
+  nflag=""
+  while getopts ":cCn" o $@
   do
     case "${o}" in 
       c) cachemode=1;;
       C) savemode=1;;
+      n) nflag="-n";;
     esac
   done
 
@@ -179,7 +198,7 @@ function get_parameter() {
       if [[ $savemode -eq 1 ]];then
         cache_parameter "${name}" "${res}"
       fi
-      echo "$res"
+      echo $nflag "$res"
     fi
   else
     cache_parameter -e "$name"
@@ -223,40 +242,184 @@ function list_parameters() {
   _check_errors
 }
 
+delete_large_parameter() {
+  local OPTIND o verbose base name second parameter vflag
+
+  verbose=0
+  vflag=""
+
+  while getopts ":v" o $@
+  do
+    case "${o}" in 
+      v) verbose=1;vflag="-v";;
+    esac
+  done
+
+  shift $((OPTIND -1))
+
+  if [[ $# -lt 1 ]];then
+    _invalid_call
+    return
+  fi
+  name="$1"
+
+  [[ $verbose -eq 1 ]] && _do_message "Deleting $name in parts"
+  _reset
+  base="$(basename "$name")"
+
+  # it would be stupid to go up to i
+
+  for second in a b c d e f g h i
+  do
+    parameter="$name/${base}_a${second}"
+    check_parameter "$parameter"
+    if [[ $? -gt 0 ]];then
+      delete_parameter $vflag "$parameter"
+    else
+      break
+    fi
+  done
+}
+
 #
 # delete_parameter()
 # delete the passed parameter name from the aws store
 # use with care
 #
 function delete_parameter() {
+  local OPTIND o verbose name 
+
+  verbose=0
+
+  while getopts ":v" o $@
+  do
+    case "${o}" in 
+      v) verbose=1;;
+    esac
+  done
+
+  shift $((OPTIND -1))
+
   if [[ $# -lt 1 ]];then
     _invalid_call
     return
   fi
   name="$1"
   _reset
+  check_parameter "$name"
+  if [[ $? -eq 0 ]];then
+    [[ $verbose -eq 1 ]] && _do_message "Parameter \"$name\" does not exist - ignoring"
+    return
+  fi
+  [[ $verbose -eq 1 ]] && _do_message "Removing parameter $name"
   aws ssm delete-parameter --name "$name"
   _check_errors
+}
+
+function get_large_parameter() {
+  local OPTIND o verbose vflag base name part once
+
+  verbose=0
+  check=1
+  vflag=""
+  cflag=""
+  while getopts ":cv" o $@
+  do
+    case "${o}" in 
+      v) verbose=1;vflag="-v";;
+      c) check=1;cflag="-c";;
+    esac
+  done
+  shift $((OPTIND -1))
+
+  if [[ $# -ne 1 ]];then
+    _invalid_call
+    return
+  fi
+
+  name="$1"
+  base="$(basename "$name")"
+  once=0
+  for second in a b c d e f g h i
+  do
+    parameter="$name/${base}_a${second}"
+    check_parameter "$parameter"
+    if [[ $? -gt 0 ]];then
+      once=1
+      get_parameter -n "$parameter"
+    else
+      break
+    fi
+  done
+  [[ $once -eq 1 ]] && echo
+}
+
+function put_large_parameter() {
+  
+  local OPTIND o verbose check vflag cflag base filename name basepart
+
+  verbose=0
+  check=1
+  vflag=""
+  cflag=""
+  while getopts ":cv" o $@
+  do
+    case "${o}" in 
+      v) verbose=1;vflag="-v";;
+      c) check=1;cflag="-c";;
+    esac
+  done
+  shift $((OPTIND -1))
+
+  filename="$1"
+  name="$2"
+  base=$(basename "$name")
+  [[ $verbose -eq 1 ]] && _do_message "Adding $name in parts"
+  rm -rf /tmp/ssm-functions.$$
+  mkdir -p /tmp/ssm-functions.$$
+  split -b 4096 "$filename" /tmp/ssm-functions.$$/${base}_
+  for part in /tmp/ssm-functions.$$/${base}_*
+  do
+    basepart=$(basename $part)
+    put_parameter $vflag $cflag -f "$part" "$name/$basepart"
+  done
+  rm -rf /tmp/ssm-functions.$$
 }
 
 #
 # put_parameter()
 # put the passed parameter into the aws store.
 # Note files can be used with -f
+# -c checks the parameter exists and only puts if it does not
 #
 function put_parameter() {
 
-  local OPTIND o filemode
+  local OPTIND o filemode checkmode verbosemode filename name value
   filemode=0
+  checkmode=0
+  verbosemode=0
 
-  while getopts ":f:" o $@
+  while getopts ":f:cv" o $@
   do
     case "${o}" in 
       f) filemode=1;filename=${OPTARG};;
+      c) checkmode=1;;
+      v) verbosemode=1;;
     esac
   done
 
   shift $((OPTIND -1))
+  name="$1"
+
+  if [[ $checkmode -eq 1 ]];then
+    check_parameter "$name"
+    if [[ $? -eq 1 ]];then
+      [[ $verbosemode -eq 1 ]] && _do_message "Parameter \"$name\" already exists - not overwriting"
+      return
+    fi
+  fi
+
+  [[ $verbosemode -eq 1 ]] && _do_message "Adding parameter $name"
 
   if [[ $filemode -eq 1 ]];then
     if [[ $# -lt 1 ]];then
@@ -268,13 +431,11 @@ function put_parameter() {
       return
     fi
     value="$(cat $filename)"
-    name="$1"
   else
     if [[ $# -lt 2 ]];then
       _invalid_call
       return
     fi
-    name="$1"
     value="$2"
   fi
   _reset
@@ -287,6 +448,7 @@ function put_parameter() {
 # List all of the parameters in the aws parameter store
 #
 function output_parameters() {
+  local p
   for p in $(list_parameters)
   do
     echo $p
@@ -304,5 +466,21 @@ function eval_ssm() {
   fi
   res="$(get_parameter $1)"
   eval "$res"
+}
+#
+# check_parameter()
+# check that the passed parameter exists, 1 yes, 0 no
+#
+function check_parameter() {
+  local name res
+  if [[ $# -lt 1 ]];then
+    _invalid_call
+    return
+  fi
+  name="$1"
+  _reset
+  res=$(aws ssm describe-parameters --parameter-filters "Key=Name,Option=Equals,Values=$name" --output=text | wc -l)
+  _check_errors
+  return $res
 }
 
