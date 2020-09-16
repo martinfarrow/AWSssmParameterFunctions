@@ -242,7 +242,7 @@ function list_parameters() {
   _check_errors
 }
 
-delete_large_parameter() {
+function delete_large_parameter() {
   local OPTIND o verbose base name second parameter vflag
 
   verbose=0
@@ -374,6 +374,7 @@ function put_large_parameter() {
   filename="$1"
   name="$2"
   base=$(basename "$name")
+  delete_large_parameter $vflag "$name"
   [[ $verbose -eq 1 ]] && _do_message "Adding $name in parts"
   rm -rf /tmp/ssm-functions.$$
   mkdir -p /tmp/ssm-functions.$$
