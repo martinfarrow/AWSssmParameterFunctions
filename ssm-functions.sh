@@ -232,18 +232,61 @@ function populate_params_array() {
   params=($(list_parameters))
 }
 
+#
+# list_parameters_by_RE()
+# read a RE and only output parameter keys that match
+# list_parameter() is much faster, consider using it
+#
+function list_parameters_by_RE() {
+  local OPTIND o verbose p vflag Qflag pattern
+  vflag=0
+  Qflag=0
+  while getopts "vQ" o $@
+  do
+    case "$o" in
+      v) [[ -t 1 ]] && vflag=1;;
+      Q) Qflag=1;;
+    esac
+  done
+  shift $((OPTIND -1))
+
+  if [[ $# -eq 0 ]];then
+    pattern="(.*)"
+  else
+    pattern="($1)"
+  fi
+
+  if [[ $Qflag -eq 0 ]];then
+    [[ $vflag -eq 1 ]] && _do_message "collecting param path data"
+    populate_params_array
+  fi
+  for p in "${params[@]}"
+  do
+    [[ $p =~ $pattern ]] && echo "$p"
+  done
+}
+
 # 
 # list_parameters()
-# get all the parameters names from the parameter store
+# get all the parameters names from the parameter store, or recursively
+# from a path if provided
 #
 function list_parameters() {
-  _reset
-  aws ssm describe-parameters --query "Parameters[*].Name" --output text
+  local pth
+  
+  if [[ $# -gt 0 ]];then
+    pth=$1
+    _reset
+    aws ssm get-parameters-by-path --path "$pth" --query "Parameters[*].Name" --output text --recursive
+  else
+    _reset
+    aws ssm describe-parameters --query "Parameters[*].Name" --output text
+  fi
   _check_errors
 }
 
 function delete_large_parameter() {
-  local OPTIND o verbose base name second parameter vflag
+  local OPTIND o verbose base name second parameter vflag delete_these
 
   verbose=0
   vflag=""
@@ -264,21 +307,12 @@ function delete_large_parameter() {
   name="$1"
 
   [[ $verbose -eq 1 ]] && _do_message "Deleting $name in parts"
-  _reset
-  base="$(basename "$name")"
-
-  # it would be stupid to go up to i
-
-  for second in a b c d e f g h i
-  do
-    parameter="$name/${base}_a${second}"
-    check_parameter "$parameter"
-    if [[ $? -gt 0 ]];then
-      delete_parameter $vflag "$parameter"
-    else
-      break
-    fi
-  done
+  delete_these=$(list_parameters "$name")
+  if [[ $delete_these != "" ]];then
+    _reset
+    aws ssm delete-parameters --names $delete_these
+    _check_errors
+  fi
 }
 
 #
