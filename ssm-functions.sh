@@ -173,12 +173,14 @@ function get_parameter() {
   local OPTIND o cachemode savemode name nflag
   cachemode=0
   savemode=0
+  recursemode=0
   nflag=""
-  while getopts ":cCn" o $@
+  while getopts ":cCnr" o $@
   do
     case "${o}" in 
       c) cachemode=1;;
       C) savemode=1;;
+      r) recursemode=1;;
       n) nflag="-n";;
     esac
   done
@@ -191,7 +193,10 @@ function get_parameter() {
   fi
   name="$1"
   _reset
-  if [[ $cachemode -eq 0 ]];then
+  if [[ $recursemode -eq 1 ]];then
+    aws ssm get-parameters-by-path --recursive --with-decryption --output=text --query "Parameters[].[Name, Value]" --path "$name"
+    _check_errors
+  elif [[ $cachemode -eq 0 ]];then
     res=$(aws ssm get-parameter --name "$name"  --with-decryption --query "Parameter.Value" --output text 2>${ssm_error_file})
     _check_errors
     if [[ $ssm_error_value -eq 0 ]];then
